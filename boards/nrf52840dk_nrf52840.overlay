@@ -16,7 +16,7 @@
 			tcpc = <&fusb307_tcpc0>;
 			vbus = <&fusb307_vbus0>;
 			power-role = "sink";
-			sink-pdos = <PDO_FIXED(9000, 100, 0)>;
+			sink-pdos = <PDO_FIXED(12000, 1000, 0)>;
 		};
 	};
 };

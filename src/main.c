@@ -60,26 +60,35 @@ static struct port0_data_t {
  * @note Generally a sink application would build an RDO from the
  *	 Source Capabilities stored in the dpm_data object
  */
-static uint32_t build_rdo(const struct port0_data_t *dpm_data)
+static uint32_t build_rdo(uint32_t object_pos, uint32_t current)
 {
 	union pd_rdo rdo;
 
-	/* Maximum operating current 100mA (GIVEBACK = 0) */
-	rdo.fixed.min_or_max_operating_current = PD_CONVERT_MA_TO_FIXED_PDO_CURRENT(100);
-	/* Operating current 100mA */
-	rdo.fixed.operating_current = PD_CONVERT_MA_TO_FIXED_PDO_CURRENT(100);
-	/* Unchunked Extended Messages Not Supported */
+	rdo.fixed.min_or_max_operating_current = PD_CONVERT_MA_TO_FIXED_PDO_CURRENT(current);
+	rdo.fixed.operating_current = PD_CONVERT_MA_TO_FIXED_PDO_CURRENT(current);
 	rdo.fixed.unchunked_ext_msg_supported = 0;
-	/* No USB Suspend */
 	rdo.fixed.no_usb_suspend = 1;
-	/* Not USB Communications Capable */
 	rdo.fixed.usb_comm_capable = 0;
-	/* No capability mismatch */
 	rdo.fixed.cap_mismatch = 0;
-	/* Don't giveback */
 	rdo.fixed.giveback = 0;
-	/* Object position 1 (5V PDO) */
-	rdo.fixed.object_pos = 1;
+	rdo.fixed.object_pos = object_pos + 1;
+
+	return rdo.raw_value;
+}
+
+static uint32_t build_ardo(uint32_t object_pos, uint32_t voltage, uint32_t current)
+{
+	union pd_rdo rdo;
+
+	rdo.augmented.operating_current = PD_CONVERT_MA_TO_AUGMENTED_PDO_CURRENT(current);
+	rdo.augmented.output_voltage = PD_CONVERT_MV_TO_AUGMENTED_PDO_VOLTAGE(voltage);
+	rdo.augmented.object_pos = object_pos + 1;
+	rdo.augmented.cap_mismatch = 0;
+	rdo.augmented.no_usb_suspend = 0;
+	rdo.augmented.unchunked_ext_msg_supported = 0;
+	rdo.augmented.usb_comm_capable = 0;
+
+	//LOG_INF("ARDO = %08X", rdo.raw_value);
 
 	return rdo.raw_value;
 }
@@ -207,8 +216,46 @@ static void port0_policy_cb_set_src_cap(const struct device *dev,
 static uint32_t port0_policy_cb_get_rdo(const struct device *dev)
 {
 	struct port0_data_t *dpm_data = usbc_get_dpm_data(dev);
+	union pd_fixed_supply_pdo_source pdo;
+	union pd_fixed_supply_pdo_source snkpdo;
 
-	return build_rdo(dpm_data);
+	// Basic/crude implemation of matching source capabilities from adapter with PDOs specified in the DT.
+	// Only useful with single PDO specified in DT, and it doesn't try to obtain the maximum capability.
+
+	LOG_INF("DeviceTree specifies %d Sink PDOs", dpm_data->snk_cap_cnt);
+	for (int i = 0; i < dpm_data->snk_cap_cnt; i++) {
+		pdo.raw_value = dpm_data->snk_caps[i];
+		if (pdo.type == PDO_FIXED) {
+			LOG_INF("%d: Fixed %dmV @ %dmA", i, PD_CONVERT_FIXED_PDO_VOLTAGE_TO_MV(pdo.voltage), PD_CONVERT_FIXED_PDO_CURRENT_TO_MA(pdo.max_current));
+		}
+	}
+
+	LOG_INF("Source advertises %d PDOs", dpm_data->src_cap_cnt);
+	for (int i = 0; i < dpm_data->src_cap_cnt; i++) {
+		pdo.raw_value = dpm_data->src_caps[i];
+		if (pdo.type == PDO_FIXED) {
+			LOG_INF("%d: Fixed %dmV @ %dmA", i, PD_CONVERT_FIXED_PDO_VOLTAGE_TO_MV(pdo.voltage), PD_CONVERT_FIXED_PDO_CURRENT_TO_MA(pdo.max_current));
+			
+			for (int z = 0; z < dpm_data->snk_cap_cnt; z++) {
+				snkpdo.raw_value = dpm_data->snk_caps[z];
+				if (pdo.type == PDO_FIXED) {
+					if ((pdo.voltage == snkpdo.voltage) & (pdo.max_current >= snkpdo.max_current)) {
+						// Capability match
+						return build_rdo(i, 1000);
+					}
+				}
+			}
+		}
+		if (pdo.type == PDO_AUGMENTED) {
+			union pd_augmented_supply_pdo_source aug_pdo;
+			aug_pdo.raw_value = dpm_data->src_caps[i];
+			LOG_INF("%d: PPS %d - %dmV @ %dmA", i, PD_CONVERT_AUGMENTED_PDO_VOLTAGE_TO_MV(aug_pdo.min_voltage), 
+				PD_CONVERT_AUGMENTED_PDO_VOLTAGE_TO_MV(aug_pdo.max_voltage), PD_CONVERT_AUGMENTED_PDO_CURRENT_TO_MA(aug_pdo.max_current));
+		}
+	}
+
+	// else return default fixed 5V PDO
+	return build_rdo(0, 1000);
 }
 /* usbc.rst callbacks end */
 
